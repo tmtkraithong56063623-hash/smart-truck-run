@@ -1,0 +1,56 @@
+rules_version = '2';
+// SMART TRUCK : SAFETY RUN — Firestore security rules
+// - ผู้เล่นทุกคนเข้าระบบแบบ Anonymous อัตโนมัติ
+// - ผู้เล่นบันทึกคะแนนได้ (สร้างใหม่เท่านั้น แก้/ลบไม่ได้) และอ่านได้เฉพาะคะแนนของตัวเอง
+// - เจ้าหน้าที่: กรอกรหัส (PIN) ในเกม ระบบเทียบกับ config/staff.pin ฝั่งเซิร์ฟเวอร์ ถ้าตรงจะอ่านคะแนนทุกคนได้
+//   รหัสไม่อยู่ในโค้ดหรือใน repo — ตั้ง/เปลี่ยนได้ที่ Firestore Console เอกสาร config/staff ฟิลด์ pin
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function isStaff() {
+      return signedIn() && exists(/databases/$(database)/documents/staff/$(request.auth.uid));
+    }
+    function nonNegInt(v, max) { return v is int && v >= 0 && v <= max; }
+
+    // ตั้งค่าระบบ (เช่น PIN เจ้าหน้าที่) — ไม่มีใครอ่าน/เขียนจากเกมได้
+    match /config/{doc} {
+      allow read, write: if false;
+    }
+
+    // เจ้าหน้าที่ที่กรอก PIN ถูกต้องแล้ว (1 เอกสารต่ออุปกรณ์)
+    match /staff/{uid} {
+      allow read: if signedIn() && request.auth.uid == uid;
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['pin', 'at'])
+        && request.resource.data.pin is string
+        && request.resource.data.pin == get(/databases/$(database)/documents/config/staff).data.pin
+        && request.resource.data.at == request.time;
+      allow delete: if false;
+    }
+
+    // ผลการเล่นแต่ละรอบ
+    match /runs/{rid} {
+      allow read: if signedIn() && (resource.data.uid == request.auth.uid || isStaff());
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['rid','plate','plateKey','name','score','stars','dist','ppe','ppeSets','zero','gates','hits','ts','uid','at'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.rid == rid
+        && request.resource.data.plate is string && request.resource.data.plate.size() > 0 && request.resource.data.plate.size() <= 20
+        && request.resource.data.plateKey is string && request.resource.data.plateKey.size() > 0 && request.resource.data.plateKey.size() <= 20
+        && request.resource.data.name is string && request.resource.data.name.size() <= 40
+        && nonNegInt(request.resource.data.score, 10000000)
+        && nonNegInt(request.resource.data.stars, 1000000)
+        && nonNegInt(request.resource.data.dist, 1000000)
+        && nonNegInt(request.resource.data.ppe, 100000)
+        && nonNegInt(request.resource.data.ppeSets, 100000)
+        && nonNegInt(request.resource.data.zero, 100000)
+        && nonNegInt(request.resource.data.gates, 100000)
+        && nonNegInt(request.resource.data.hits, 100)
+        && request.resource.data.ts is int
+        && request.resource.data.at == request.time;
+      allow update: if false;
+      allow delete: if isStaff();
+    }
+  }
+}
